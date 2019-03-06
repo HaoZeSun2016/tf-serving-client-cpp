@@ -1,125 +1,136 @@
-#include <float.h>
+// by Haoze Sun 2019.3.6
+// a demo for qa-select using tf serving.
 
-#include <grpc++/grpc++.h>
-#include <opencv2/opencv.hpp>
-
+#include <iostream>
+#include <vector>
+#include <unordered_map>
+#include <string>
+#include "grpcpp/create_channel.h"
+#include "grpcpp/security/credentials.h"
+#include "google/protobuf/map.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/util/command_line_flags.h"
 #include "tensorflow_serving/apis/prediction_service.grpc.pb.h"
 
+using grpc::Channel;
+using grpc::ClientContext;
+using grpc::Status;
 
+using tensorflow::serving::PredictRequest;
+using tensorflow::serving::PredictResponse;
+using tensorflow::serving::PredictionService;
 
-// Constants.
-#define HOST "yourhost.com"
-#define PORT 9000
-#define MODEL_NAME "default"
-#define MODEL_SIGNATURE_NAME "predict"
-#define MODEL_INPUT "images"
+typedef google::protobuf::Map<tensorflow::string, tensorflow::TensorProto> TFFDict;
+typedef std::unordered_map<std::string, tensorflow::TensorProto> FFDict;  // feed & fetch dict
 
+// override of c++ types into tensorflow protobuf type
+// 1. string/boolean/int32/float32
+// 2. data in row major
+// github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/tensor.proto
+// github.com/tensorflow/tensorflow/blob/master/tensorflow/core/framework/tensor_shape.proto
+tensorflow::TensorProto transFormat(const char * arr, int & arr_size) {
+    tensorflow::TensorProto proto;
+    proto.set_dtype(tensorflow::DataType::DT_STRING);
+    proto.add_string_val(arr, arr_size);
+    proto.mutable_tensor_shape()->add_dim()->set_size(1);
+    return proto;
+}
 
-
-/// Type alias for string-TensorProto map.
-typedef google::protobuf::Map<std::string, tensorflow::TensorProto> StringKeyedProtos;
-
-
-
-/// Entry point.
-int main(int argc, char** argv) {
-
-  // Checking args.
-  if (argc < 2) {
-    std::cerr << "Please provide a path to the image to be recognized via TensorFlow server" << std::endl;
-    return 1;
-  }
-
-  // Opening an image.
-  const char* imagePath = argv[1];
-  cv::Mat image = cv::imread(imagePath);
-  if (image.empty()) {
-    std::cerr << "Could not open provided image: " << imagePath << std::endl;
-    return 1;
-  }
-
-
-
-  // Preparing required variables to make a predict request.
-  tensorflow::serving::PredictRequest predictRequest;
-  tensorflow::serving::PredictResponse response;
-  grpc::ClientContext context;
-
-  // Describing model name and signature from remote server.
-  predictRequest.mutable_model_spec()->set_name(MODEL_NAME);
-  predictRequest.mutable_model_spec()->set_signature_name(MODEL_SIGNATURE_NAME);
-
-
-
-  // Describing remote model inputs shape.
-  StringKeyedProtos& inputs = *predictRequest.mutable_inputs();
-
-  // Setting dimensions of the input shape.
-  tensorflow::TensorProto inputShape;
-  inputShape.set_dtype(tensorflow::DataType::DT_FLOAT);
-  inputShape.mutable_tensor_shape()->add_dim()->set_size(1);                // one image
-  inputShape.mutable_tensor_shape()->add_dim()->set_size(image.cols);       // with its image size
-  inputShape.mutable_tensor_shape()->add_dim()->set_size(image.rows);
-  inputShape.mutable_tensor_shape()->add_dim()->set_size(image.channels()); // and its channels count
-
-
-
-  // Loading an image for the request.
-  for (auto x = 0; x < image.cols; ++x)
-    for (auto y = 0; y < image.rows; ++y) {
-      cv::Vec3b intensity = image.at<cv::Vec3b>(x, y);
-      for (auto c = 0; c < image.channels(); ++c) {
-        inputShape.add_float_val((float) intensity.val[c]);
-      }
+tensorflow::TensorProto transFormat(const std::string * arr, int & arr_size, std::vector<int> & shapes) {
+    tensorflow::TensorProto proto;
+    proto.set_dtype(tensorflow::DataType::DT_STRING);
+    for (int i = 0; i < arr_size; ++i) {
+        proto.add_string_val(arr[i]);
     }
-  inputs[MODEL_INPUT] = inputShape;
+    for (int i = 0; i < shapes.size(); ++i) {
+        proto.mutable_tensor_shape()->add_dim()->set_size(shapes[i]);
+    }
+    return proto;
+}
+
+tensorflow::TensorProto transFormat(const bool * arr, int & arr_size, std::vector<int> & shapes) {
+    tensorflow::TensorProto proto;
+    proto.set_dtype(tensorflow::DataType::DT_BOOL);
+    for (int i = 0; i < arr_size; ++i) {
+        proto.add_bool_val(arr[i]);
+    }
+    for (int i = 0; i < shapes.size(); ++i) {
+        proto.mutable_tensor_shape()->add_dim()->set_size(shapes[i]);
+    }
+    return proto;
+}
+
+tensorflow::TensorProto transFormat(const int * arr, int & arr_size, std::vector<int> & shapes) {
+    tensorflow::TensorProto proto;
+    proto.set_dtype(tensorflow::DataType::DT_INT32);
+    for (int i = 0; i < arr_size; ++i) {
+        proto.add_int_val(arr[i]);
+    }
+    for (int i = 0; i < shapes.size(); ++i) {
+        proto.mutable_tensor_shape()->add_dim()->set_size(shapes[i]);
+    }
+    return proto;
+}
+
+tensorflow::TensorProto transFormat(const float * arr, int & arr_size, std::vector<int> & shapes) {
+    tensorflow::TensorProto proto;
+    proto.set_dtype(tensorflow::DataType::DT_FLOAT);
+    for (int i = 0; i < arr_size; ++i) {
+        ;
+        proto.add_float_val(arr[i]);
+    }
+    for (int i = 0; i < shapes.size(); ++i) {
+        proto.mutable_tensor_shape()->add_dim()->set_size(shapes[i]);
+    }
+    return proto;
+}
 
 
+class ServingClient {
+public:
+    ServingClient(std::string port, std::string model_name, std::string model_signature_name);
 
-  // Preparing request executor.
-  std::unique_ptr<tensorflow::serving::PredictionService::Stub> stub =
-          tensorflow::serving::PredictionService::NewStub(
-                  grpc::CreateChannel(
-                          std::string(HOST) + ":" + std::to_string(PORT), grpc::InsecureChannelCredentials()));
+    bool callPredict(FFDict& feed_dict, FFDict& fetch_dict);
 
-  // Firing predict request.
-  grpc::Status status = stub->Predict(&context, predictRequest, &response);
+private:
+    std::unique_ptr<PredictionService::Stub> stub_;
+    tensorflow::string model_name_;
+    tensorflow::string model_signature_name_;
+};
 
+ServingClient::ServingClient(std::string port, std::string model_name, std::string model_signature_name) {
+    // setup grpc connection
+    std::shared_ptr<Channel> channel = grpc::CreateChannel(port, grpc::InsecureChannelCredentials());
+    // setup service
+    this->stub_ = PredictionService::NewStub(channel);
+    this->model_name_ = model_name;
+    this->model_signature_name_ = model_signature_name;
+}
 
+bool ServingClient::callPredict(FFDict& feed_dict, FFDict& fetch_dict) {
+    PredictRequest predictRequest;
+    PredictResponse response;
+    ClientContext context;
 
-  // Checking server response status.
-  if (!status.ok()) {
-    std::cerr << "Predict request has failed with code " << status.error_code()
-              << " and message: " << status.error_message() << std::endl;
-    return 1;
-  }
-
-  // Iterating through results.
-  StringKeyedProtos& outputs = *response.mutable_outputs();
-  StringKeyedProtos::iterator iter;
-  for (iter = outputs.begin(); iter != outputs.end(); ++iter) {
-    tensorflow::TensorProto& output = iter->second;
-
-    // Looking for the max predictor's confidence.
-    float max = -FLT_MAX;
-    int maxIndex = -1;
-    for (auto i = 0; i < output.float_val_size(); ++i) {
-      const float outValue = output.float_val(i);
-      if (outValue > max) {
-        max = outValue;
-        maxIndex = i;
-      }
+    predictRequest.mutable_model_spec()->set_name(this->model_name_);
+    predictRequest.mutable_model_spec()->set_signature_name(this->model_signature_name_);  // "serving_default"  as default
+    TFFDict & inputs = *predictRequest.mutable_inputs();
+    // loop through and copy from feed dict
+    for (FFDict::iterator it = feed_dict.begin(); it != feed_dict.end(); it++) {
+        inputs[it->first] = it->second;
     }
 
-    // Showing result from remote server.
-    if (maxIndex != -1) {
-      std::cout << "Result class is " << maxIndex << " with response " << max << std::endl;
-    } else {
-      std::cout << "There are no classes available to make a prediction" << std::endl;
+    Status status = this->stub_->Predict(&context, predictRequest, &response);
+    if (status.ok()) {
+        // copy results form response
+        TFFDict & outputs = *response.mutable_outputs();
+        for (TFFDict::iterator it = outputs.begin(); it != outputs.end(); it++) {
+            fetch_dict[std::string(it->first)] = it->second;
+        }
+        return true;
     }
-  }
-
-
-
-  return 0;
+    else {
+        return false;
+    }
 }
