@@ -39,3 +39,8 @@ For example you can use a bunch of commands (from the root of the repo):
 to be sent to the server:
 
 `./tf-serving-client-cpp`
+
+to add vocabulary look up (data processing module) in server:
+https://www.tensorflow.org/tfx/serving/custom_servable -- Create a new kind of servable
+https://github.com/tensorflow/serving/issues/582 -- GitHub issues
+
