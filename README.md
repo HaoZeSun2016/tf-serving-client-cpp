@@ -36,7 +36,6 @@ For example you can use a bunch of commands (from the root of the repo):
 
 `mkdir build && cd build && cmake -D Protobuf_PROTOC_EXECUTABLE=/usr/local/bin/protoc .. && make`
 
-A built executable accepts one argument with a path to an image
 to be sent to the server:
 
-`./tf-serving-client-cpp test.jpg`
+`./tf-serving-client-cpp`
