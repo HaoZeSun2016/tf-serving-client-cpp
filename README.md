@@ -22,9 +22,6 @@ you should install next dependencies:
   * `git submodule update --init`
   * `make`
   * `sudo make install`
-  
-* OpenCV (http://opencv.org/),
-there are a lot of ways of the installation are available.
 
 COMPILATION AND USAGE
 -

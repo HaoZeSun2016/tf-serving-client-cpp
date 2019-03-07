@@ -15,12 +15,6 @@ find_package(Protobuf REQUIRED)
 # Protobuf compiler dependency.
 include(CompileProto.cmake)
 
-# OpenCV dependency.
-find_package(OpenCV
-        HINTS /usr/local/opt/opencv3
-        REQUIRED core imgcodecs)
-include_directories(${OpenCV_INCLUDE_DIRS})
-
 
 
 # Protobuf sources of the TensorFlow Serving to be compiled without a gRPC plugin.
